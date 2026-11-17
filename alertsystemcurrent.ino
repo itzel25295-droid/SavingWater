@@ -1,0 +1,129 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+
+// Inicializa la pantalla LCD (dirección 0x27, 16 columnas, 2 filas)
+// Nota: Si tu pantalla no muestra texto, cambia 0x27 por 0x3F
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+
+// --- CONFIGURACIÓN DE PINES ---
+const int pinFlujo = 2;   // Sensor de flujo 
+const int pinRele = 7;    // IN1 del módulo relé (controla la válvula)
+const int pinBuzzer = 8;  // Buzzer de alerta (va a la resistencia de la Base del 2N4401)
+
+
+// --- LÍMITE DE CONSUMO (UMBRAL) ---
+const float LIMITE_LITROS = 5.0;  // Límite en litros antes de cerrar la válvula
+
+
+// --- VARIABLES DEL SENSOR DE FLUJO ---
+volatile int pulsos = 0;  // Cuenta los pulsos de la turbina
+float caudalLmin = 0.0;   // Caudal instantáneo en Litros/minuto
+float totalLitros = 0.0;  // Volumen total acumulado en Litros
+unsigned long tiempoAnterior = 0;
+
+
+// Factor de calibración estándar para sensor YF-S201 (7.5 pulsos/seg = 1 L/min)
+const float factorCalibracion = 7.5;
+bool alertaActiva = false;
+
+
+// Función de interrupción: cuenta cada vuelta del sensor sin detener el código
+void contarPulsos() {
+  pulsos++;
+}
+
+
+void setup() {
+  Serial.begin(9600);
+
+
+  // Configurar pines
+  pinMode(pinFlujo, INPUT_PULLUP);
+  pinMode(pinRele, OUTPUT);
+  pinMode(pinBuzzer, OUTPUT);
+
+
+  // Iniciar pantalla LCD
+  lcd.init();
+  lcd.backlight();
+  lcd.setCursor(0, 0);
+  lcd.print("Monitor de Agua");
+  lcd.setCursor(0, 1);
+  lcd.print("Iniciando...");
+  delay(2000);
+  lcd.clear();
+
+
+  // Estado inicial: LOW activa tu relé azul y abre la electroválvula
+  digitalWrite(pinRele, LOW);
+  digitalWrite(pinBuzzer, LOW);
+
+
+  // Activar interrupción en el pin 2
+  attachInterrupt(digitalPinToInterrupt(pinFlujo), contarPulsos, RISING);
+  tiempoAnterior = millis();
+}
+
+
+void loop() {
+  // Ejecutar cálculo exactamente cada 1 segundo (1000 ms)
+  if (millis() - tiempoAnterior >= 1000) {
+    // Pausar interrupciones un instante para leer el dato limpio
+    detachInterrupt(digitalPinToInterrupt(pinFlujo));
+
+
+    // Calcular caudal en Litros/minuto
+    caudalLmin = (pulsos / factorCalibracion);
+
+
+    // Sumar los litros que pasaron en este último segundo (L/min entre 60 seg)
+    totalLitros += (caudalLmin / 60.0);
+
+
+    // Reiniciar contador y reloj
+    pulsos = 0;
+    tiempoAnterior = millis();
+
+
+    // Reactivar interrupciones
+    attachInterrupt(digitalPinToInterrupt(pinFlujo), contarPulsos, RISING);
+
+
+    // --- VERIFICAR SI SE SUPERÓ EL LÍMITE DE AGUA ---
+    if (totalLitros >= LIMITE_LITROS) {
+      alertaActiva = true;
+      digitalWrite(pinRele, HIGH);    // HIGH apaga el relé azul -> La válvula NC se CIERRA
+      digitalWrite(pinBuzzer, HIGH);  // Enciende el transistor 2N4401 -> Suena el buzzer
+    }
+
+
+    // --- ACTUALIZAR PANTALLA LCD ---
+    if (!alertaActiva) {
+      lcd.setCursor(0, 0);
+      lcd.print("Flujo: ");
+      lcd.print(caudalLmin, 1);
+      lcd.print(" L/m   ");
+
+
+      lcd.setCursor(0, 1);
+      lcd.print("Total: ");
+      lcd.print(totalLitros, 2);
+      lcd.print(" L     ");
+    } else {
+      lcd.setCursor(0, 0);
+      lcd.print("!LIMITE EXCEDIDO!");
+      lcd.setCursor(0, 1);
+      lcd.print("Valvula CERRADA ");
+    }
+
+
+    // --- MOSTRAR EN MONITOR SERIE ---
+    Serial.print("Caudal: ");
+    Serial.print(caudalLmin);
+    Serial.print(" L/min | Total: ");
+    Serial.print(totalLitros);
+    Serial.println(" L");
+  }
+}
